@@ -138,20 +138,26 @@ fn main() -> GenericResult<()> {
 
         // loop needed due to a race condition
         loop {
-            // bring up the loopback interface in the new network namespace
-            let mut ip_cmd = unshare::Command::new("/bin/ip");
-            ip_cmd.args(&["link", "set", "dev", "lo", "up"]);
+            // we don't actually want to run a program in this namespace,
+            // we're just abusing the library
+            let mut interface_cmd = unshare::Command::new("/bin/true");
 
-            // need to perform these as root inside the user namespace
-            ip_cmd.uid(0);
-            ip_cmd.gid(0);
+            // need to perform this as root inside the user namespace
+            interface_cmd.uid(0);
+            interface_cmd.gid(0);
 
             // TODO: these options require a specific order, but the unshare lib uses a hashmap so
             // there is a race condition
-            ip_cmd.set_namespace(&user_ns, unshare::Namespace::User)?;
-            ip_cmd.set_namespace(&net_ns, unshare::Namespace::Net)?;
+            interface_cmd.set_namespace(&user_ns, unshare::Namespace::User)?;
+            interface_cmd.set_namespace(&net_ns, unshare::Namespace::Net)?;
 
-            match ip_cmd.status() {
+            // bring up the loopback interface in the new network namespace
+            interface_cmd.before_exec(|| {
+                // must be careful here: we can't allocate memory, use mutexes, etc
+                bring_up_interface(b"lo")
+            });
+
+            match interface_cmd.status() {
                 Err(x) => match x {
                     // unshare probably tried to join the net ns before the user ns
                     unshare::Error::SetNs(_) => {
@@ -161,12 +167,14 @@ fn main() -> GenericResult<()> {
                 },
                 Ok(x) => match x {
                     unshare::ExitStatus::Exited(0) => {}
-                    unshare::ExitStatus::Exited(x) => {
-                        warn!("The 'ip' command exited with status {:?}", x)
-                    }
-                    unshare::ExitStatus::Signaled(x, _) => {
-                        warn!("The 'ip' command exited with signal {:?}", x)
-                    }
+                    unshare::ExitStatus::Exited(x) => warn!(
+                        "Error while bringing up the loopback interface: status {:?}",
+                        x
+                    ),
+                    unshare::ExitStatus::Signaled(x, _) => warn!(
+                        "Error while bringing up the loopback interface: signal {:?}",
+                        x
+                    ),
                 },
             }
 
@@ -220,6 +228,72 @@ fn main() -> GenericResult<()> {
     proxy_runtime_thread.join().unwrap();
 
     std::process::exit(rv);
+}
+
+/// Convert a `&[u8]` to `&[i8]`. Useful when making C syscalls.
+fn u8_to_i8_slice(s: &[u8]) -> &[i8] {
+    unsafe { std::slice::from_raw_parts(s.as_ptr() as *const i8, s.len()) }
+}
+
+/// Bring up a given network interface.
+fn bring_up_interface(interface_name: &[u8]) -> std::io::Result<()> {
+    // must be careful here: we can't allocate memory, use mutexes, etc
+
+    #[derive(Copy, Clone)]
+    #[repr(C)]
+    struct ifmap {
+        mem_start: libc::c_ulong,
+        mem_end: libc::c_ulong,
+        base_addr: libc::c_ushort,
+        irq: libc::c_uchar,
+        dma: libc::c_uchar,
+        port: libc::c_uchar,
+    }
+
+    #[repr(C)]
+    union ifreq_union {
+        ifr_addr: libc::sockaddr,
+        ifr_dstaddr: libc::sockaddr,
+        ifr_broadaddr: libc::sockaddr,
+        ifr_netmask: libc::sockaddr,
+        ifr_hwaddr: libc::sockaddr,
+        ifr_flags: libc::c_short,
+        ifr_ifindex: libc::c_int,
+        ifr_metric: libc::c_int,
+        ifr_mtu: libc::c_int,
+        ifr_map: ifmap,
+        ifr_slave: [libc::c_char; libc::IFNAMSIZ],
+        ifr_newname: [libc::c_char; libc::IFNAMSIZ],
+        ifr_data: *const libc::c_char,
+    }
+
+    #[repr(C)]
+    struct ifreq {
+        ifr_name: [libc::c_char; libc::IFNAMSIZ],
+        u: ifreq_union,
+    }
+
+    // following the steps at https://stackoverflow.com/a/17997505
+
+    let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0) };
+    if s < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut ifr: ifreq = unsafe { std::mem::zeroed() };
+
+    // copy name, leaving room for a nul byte
+    assert!(interface_name.len() < std::mem::size_of_val(&ifr.ifr_name));
+    ifr.ifr_name[..interface_name.len()].clone_from_slice(u8_to_i8_slice(interface_name));
+
+    unsafe { ifr.u.ifr_flags |= libc::IFF_UP as i16 };
+
+    let rv = unsafe { libc::ioctl(s, libc::SIOCSIFFLAGS, &ifr as *const _) };
+    if rv != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
 }
 
 /// Read sub ids from a file (ex: /etc/subuid) for a given user.

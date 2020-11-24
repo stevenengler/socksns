@@ -9,7 +9,7 @@ This tool will run a program in an isolated network namespace, and allow the pro
 #### Installation:
 
 ```
-apt install uidmap iproute2
+apt install uidmap
 [ "$(</proc/sys/kernel/unprivileged_userns_clone)" = "0" ] && echo "You must have unprivileged user namespaces enabled"
 
 # install from source
