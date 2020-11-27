@@ -2,7 +2,7 @@
 
 [![Latest Version]][crates.io]
 
-This tool will run a program in an isolated network namespace, and allow the program to connect only to a single TCP port such as a SOCKS proxy.
+This tool will run a program in an isolated network namespace, allowing the program to connect only to a single TCP address such as a SOCKS proxy. This can help prevent accidental proxy-bypass issues that could leak non-proxied requests.
 
 #### Installation:
 
