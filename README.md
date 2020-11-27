@@ -2,18 +2,16 @@
 
 [![Latest Version]][crates.io]
 
-**Note:** This tool is a proof-of-concept and the code is terrible.
-
 This tool will run a program in an isolated network namespace, and allow the program to connect only to a single TCP port such as a SOCKS proxy.
 
 #### Installation:
 
-```
-apt install uidmap
-[ "$(</proc/sys/kernel/unprivileged_userns_clone)" = "0" ] && echo "You must have unprivileged user namespaces enabled"
+Support for unprivileged user namespaces is required to run socksns. This is enabled by default in the mainline kernel and most distributions, but you may want to make sure that `/proc/sys/kernel/unprivileged_userns_clone` is not `0`.
 
+```bash
 # install from source
-cargo install --path .
+git clone https://github.com/stevenengler/socksns.git
+cd socksns && cargo install --path .
 
 # install from crates.io
 cargo install socksns

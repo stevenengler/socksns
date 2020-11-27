@@ -1,8 +1,7 @@
-use std::io::BufRead;
-use std::io::{Read, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::io::Write;
+use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::os::unix::process::CommandExt;
+use std::os::unix::process::ExitStatusExt;
 
 use log::*;
 
@@ -30,178 +29,97 @@ fn main() -> GenericResult<()> {
         })
         .init();
 
-    let (mut stream_parent, stream_child) = std::os::unix::net::UnixStream::pair()?;
+    let (stream_parent, stream_child) = std::os::unix::net::UnixStream::pair()?;
 
-    // let's fork before we do anything else since rust likes using mutexes
-    let pid = unsafe { nix::unistd::fork() };
+    // set a timeout so that if the child process exits early, the parent process won't block
+    stream_parent.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
 
-    // TODO: is there a nice way to close the opposite ends of the unix sockets here?
-    let child_pid = match pid? {
-        nix::unistd::ForkResult::Child => {
-            run_child_proc(stream_child)?;
-            std::process::exit(0);
-        }
-        nix::unistd::ForkResult::Parent { child: x, .. } => x,
-    };
-
-    // since the `unshare` library uses execve, we need to try to mimic the lookup
-    // TODO: modify unshare/src/child.rs to use execvp instead of execve
-    args[0] = find_exec(&args[0]);
-
-    debug!("Found program: {:?}", args[0]);
-
-    let user = users::get_user_by_uid(users::get_current_uid()).ok_or("User not found")?;
-
-    let username = user.name().to_string_lossy().into_owned();
-    let userid = user.uid();
-    let groupid = user.primary_group_id();
+    let userid = nix::unistd::getuid();
+    let groupid = nix::unistd::getgid();
 
     debug!("User info: uid={}, gid={}", userid, groupid);
 
-    let subuids = get_sub_ids(&username, "/etc/subuid")?;
-    let subgids = get_sub_ids(&username, "/etc/subgid")?;
+    let mut cmd = std::process::Command::new(&args[0]);
+    cmd.args(&args[1..]);
+    unsafe {
+        cmd.pre_exec(move || {
+            // warning: this code allocates memory and runs after the fork(), so there must
+            // not be any threads running when this code starts (when the child spawns)
 
-    debug!("User maps: subuids={:?}, subgids={:?}", subuids, subgids);
+            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWUSER).unwrap();
+            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET).unwrap();
 
-    let uid_maps = vec![
-        unshare::UidMap {
-            inside_uid: 0,
-            outside_uid: subuids.start,
-            count: 1,
-        },
-        unshare::UidMap {
-            inside_uid: userid,
-            outside_uid: userid,
-            count: 1,
-        },
-    ];
+            // writes to a file in /proc/self
+            fn write_to_file(fname: &str, bytes: &[u8]) -> std::io::Result<()> {
+                let path = format!("/proc/self/{}", fname);
+                let mut f = std::fs::OpenOptions::new()
+                    .read(false)
+                    .write(true)
+                    .open(path)?;
 
-    let gid_maps = vec![
-        unshare::GidMap {
-            inside_gid: 0,
-            outside_gid: subgids.start,
-            count: 1,
-        },
-        unshare::GidMap {
-            inside_gid: groupid,
-            outside_gid: groupid,
-            count: 1,
-        },
-    ];
+                let num = f.write(bytes)?;
+                assert!(num == bytes.len());
+                Ok(())
+            };
 
-    let mut namespace_cmd = unshare::Command::new(&args[0]);
-    namespace_cmd.args(&args[1..]);
-    namespace_cmd.unshare(&[unshare::Namespace::Net, unshare::Namespace::User]);
-    namespace_cmd.set_id_map_commands("/usr/bin/newuidmap", "/usr/bin/newgidmap");
-    namespace_cmd.set_id_maps(uid_maps, gid_maps);
+            // gain root privileges in the new user namespace
+            write_to_file("setgroups", b"deny")?;
+            write_to_file("uid_map", format!("0 {} 1", userid).as_bytes())?;
+            write_to_file("gid_map", format!("0 {} 1", groupid).as_bytes())?;
 
-    // TODO: is this useful? it seems to break bash
-    //namespace_cmd.make_group_leader(true);
+            // bring up the loopback interface while we have root privileges
+            bring_up_interface(b"lo")?;
 
-    let (sender, receiver) = std::sync::mpsc::channel();
+            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWUSER).unwrap();
 
-    let notify = std::sync::Arc::new(tokio::sync::Notify::new());
-    let notify2 = notify.clone();
+            // become the original user again
+            write_to_file("uid_map", format!("{} 0 1", userid).as_bytes())?;
+            write_to_file("gid_map", format!("{} 0 1", groupid).as_bytes())?;
 
-    // do a lot of stuff before we start the user's application
-    // TODO: why doesn't before_unfreeze() take an FnOnce instead of an FnMut?!
-    namespace_cmd.before_unfreeze(move |pid| {
-        //set_id_map("/usr/bin/newuidmap", pid, userid, &subuids)?;
-        //set_id_map("/usr/bin/newgidmap", pid, groupid, &subgids)?;
+            let listener = std::net::TcpListener::bind("127.0.0.1:9050")?;
+            let fd = listener.into_raw_fd();
 
-        // send the pid to the forked process
-        let pid_u32: u32 = pid;
-        stream_parent.write(&pid_u32.to_ne_bytes())?;
+            // send the bound socket to the process outside of the namespace
+            stream_child.send_fd(fd)?;
 
-        // receive the socket bound in the new network namespace
-        let listening_fd = stream_parent.recv_fd()?;
+            Ok(())
+        })
+    };
 
-        debug!("Received listening fd: {}", listening_fd);
+    debug!("Starting program: {:?}", cmd);
 
-        // wait for child process to exit
-        loop {
-            match nix::sys::wait::wait()? {
-                nix::sys::wait::WaitStatus::Exited(pid, rv) => {
-                    if pid == child_pid {
-                        if rv != 0 {
-                            warn!("Forked process exited with status {}", rv);
-                        }
-                        break;
-                    }
-                }
-                _ => {}
-            }
+    // warning: no threads can be running when spawn() is called
+    let child = cmd.spawn();
+
+    // check that the program was found
+    if let Err(ref e) = child {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            error!("{:?} cannot be found", args[0]);
+            std::process::exit(1);
         }
+    }
 
-        let user_ns = open_namespace(pid, "user")?;
-        let net_ns = open_namespace(pid, "net")?;
+    let mut child = child?;
 
-        // loop needed due to a race condition
-        loop {
-            // we don't actually want to run a program in this namespace,
-            // we're just abusing the library
-            let mut interface_cmd = unshare::Command::new("/bin/true");
+    // receive the socket bound inside the namespace
+    let listening_fd = stream_parent.recv_fd();
 
-            // need to perform this as root inside the user namespace
-            interface_cmd.uid(0);
-            interface_cmd.gid(0);
-
-            // TODO: these options require a specific order, but the unshare lib uses a hashmap so
-            // there is a race condition
-            interface_cmd.set_namespace(&user_ns, unshare::Namespace::User)?;
-            interface_cmd.set_namespace(&net_ns, unshare::Namespace::Net)?;
-
-            // bring up the loopback interface in the new network namespace
-            interface_cmd.before_exec(|| {
-                // must be careful here: we can't allocate memory, use mutexes, etc
-                bring_up_interface(b"lo")
-            });
-
-            match interface_cmd.status() {
-                Err(x) => match x {
-                    // unshare probably tried to join the net ns before the user ns
-                    unshare::Error::SetNs(_) => {
-                        continue;
-                    }
-                    x => Err(x)?,
-                },
-                Ok(x) => match x {
-                    unshare::ExitStatus::Exited(0) => {}
-                    unshare::ExitStatus::Exited(x) => warn!(
-                        "Error while bringing up the loopback interface: status {:?}",
-                        x
-                    ),
-                    unshare::ExitStatus::Signaled(x, _) => warn!(
-                        "Error while bringing up the loopback interface: signal {:?}",
-                        x
-                    ),
-                },
-            }
-
-            break;
+    // check that the read didn't time out
+    if let Err(ref e) = listening_fd {
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            debug!("Didn't receive the fd on the socket");
+            debug!("Assuming the child process crashed, so exiting...");
+            std::process::exit(1);
         }
+    }
 
-        // we can now start the proxy runtime
-        sender.send(listening_fd)?;
+    let listening_fd = listening_fd?;
 
-        Ok(())
-    });
+    debug!("Received listening fd: {}", listening_fd);
 
-    debug!(
-        "Starting program: {}",
-        namespace_cmd.display(&unshare::Style::short().path(true))
-    );
-
-    let mut proc_child = match namespace_cmd.spawn() {
-        Err(unshare::Error::Fork(1)) => {
-            warn!("Permission error when attempting to clone() new process");
-            warn!("You may not have permission to create new user namespaces");
-            Err(unshare::Error::Fork(1))
-        }
-        x => x,
-    }?;
-
-    let listening_fd = receiver.recv()?;
+    // used to stop the proxy server
+    let stop_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    let stop_notify_clone = stop_notify.clone();
 
     let proxy_runtime_thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -211,18 +129,23 @@ fn main() -> GenericResult<()> {
 
         debug!("Starting proxy runtime");
 
-        rt.block_on(run_proxy(listening_fd, notify2)).unwrap();
+        rt.block_on(run_proxy_server(listening_fd, stop_notify_clone))
+            .unwrap();
     });
 
-    let rv = match proc_child.wait()? {
-        unshare::ExitStatus::Exited(x) => x as i32,
-        unshare::ExitStatus::Signaled(x, _) => 128 + (x as i32),
+    let exit_status = child.wait()?;
+    let rv = match exit_status.code() {
+        Some(code) => code as i32,
+        // if it exited by a signal, set the exit code as bash does
+        None => 128 + (exit_status.signal().unwrap() as i32),
     };
 
-    debug!("Program exited with status {}", rv);
+    debug!("Program exited with status: {}", rv);
 
     // the program has exited, so tell the proxy to stop listening for new connections
-    notify.notify_one();
+    stop_notify.notify_one();
+
+    debug!("Waiting for proxy runtime to finish");
 
     // wait for existing proxy connections to finish
     proxy_runtime_thread.join().unwrap();
@@ -296,95 +219,8 @@ fn bring_up_interface(interface_name: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read sub ids from a file (ex: /etc/subuid) for a given user.
-fn get_sub_ids(username: &str, filename: &str) -> GenericResult<std::ops::Range<u32>> {
-    let f = std::fs::OpenOptions::new()
-        .read(true)
-        .write(false)
-        .open(filename)?;
-
-    let line = std::io::BufReader::new(f)
-        .lines()
-        // TODO: can make this nicer once `try_find()` is supported:
-        // https://github.com/rust-lang/rust/issues/63178
-        .map(|l| l.unwrap())
-        .find(|l| l.trim().starts_with(&username))
-        .ok_or(format!("Username {} not found in {}", username, filename))?;
-
-    // line should look something like "username:subid_start:subid_count"
-    let mut line = line.split(':').map(|x| x.trim());
-
-    // we searched the file for the username, so this shouldn't fail
-    assert!(line.next().unwrap() == username);
-
-    let start: u32 = line.next().ok_or("No uid start")?.parse()?;
-    let count: u32 = line.next().ok_or("No uid count")?.parse()?;
-
-    Ok(start..(start + count))
-}
-
-/// Open the namespace for a given process.
-fn open_namespace(pid: u32, ns_name: &str) -> Result<std::fs::File, std::io::Error> {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(false)
-        .open(format!("/proc/{}/ns/{}", pid, ns_name))
-}
-
-/// Try to mimic the behaviour of `execve()` when choosing what executable binary to run.
-fn find_exec(name: &std::ffi::OsStr) -> std::ffi::OsString {
-    // if it has a '/' character, always treat it as a path
-    if name.as_bytes().contains(&b'/') {
-        std::env::current_dir().unwrap().join(name).into_os_string()
-    } else {
-        std::env::var_os("PATH")
-            .and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .filter_map(|dir| {
-                        let full_path = dir.join(&name);
-                        if full_path.is_file() {
-                            let mode = full_path.metadata().unwrap().permissions().mode();
-                            if mode & 0o111 != 0 {
-                                Some(full_path)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .next()
-            })
-            .map_or(name.into(), |p| p.into_os_string())
-    }
-}
-
-/// The helper process, which moves itself to the new network/user namespaces, and binds a socket.
-fn run_child_proc(mut stream: std::os::unix::net::UnixStream) -> GenericResult<()> {
-    let mut inbuf = [0u8; 4];
-    stream.read(&mut inbuf)?;
-
-    let pid: u32 = u32::from_ne_bytes(inbuf);
-
-    let user_ns = open_namespace(pid, "user")?;
-    let net_ns = open_namespace(pid, "net")?;
-
-    let user_fd = user_ns.as_raw_fd();
-    let net_fd = net_ns.as_raw_fd();
-
-    nix::sched::setns(user_fd, nix::sched::CloneFlags::CLONE_NEWUSER)?;
-    nix::sched::setns(net_fd, nix::sched::CloneFlags::CLONE_NEWNET)?;
-
-    let listener = std::net::TcpListener::bind("127.0.0.1:9050")?;
-    let fd = listener.into_raw_fd();
-
-    stream.send_fd(fd)?;
-
-    Ok(())
-}
-
 /// Run the proxy listener.
-async fn run_proxy(
+async fn run_proxy_server(
     listening_fd: i32,
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
 ) -> GenericResult<()> {
@@ -402,7 +238,7 @@ async fn run_proxy(
                 let (socket, addr) = res.unwrap();
                 debug!("New connection from {}", addr);
                 tokio::spawn(async move {
-                    if let Err(err) = proxy(socket).await {
+                    if let Err(err) = proxy_connection(socket).await {
                         warn!("Unexpected error from connection {}: {}", addr, err);
                     } else {
                         debug!("Closed connection from {}", addr);
@@ -414,7 +250,7 @@ async fn run_proxy(
 }
 
 /// Proxy data between the incoming connection and a new connection outside the network namespace.
-async fn proxy(client: tokio::net::TcpStream) -> GenericResult<()> {
+async fn proxy_connection(client: tokio::net::TcpStream) -> GenericResult<()> {
     let dst: std::net::SocketAddr = "127.0.0.1:9050".parse()?;
 
     let server = tokio::net::TcpStream::connect(dst).await?;
