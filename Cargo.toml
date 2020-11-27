@@ -6,6 +6,8 @@ authors = ["Steven Engler"]
 edition = "2018"
 repository = "https://github.com/stevenengler/socksns"
 description = "A tool for running an application in an isolated network namespace, with external network access only through a SOCKS proxy."
+keywords = ["socks", "proxy", "tor", "namespace", "isolation"]
+categories = ["command-line-utilities"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
