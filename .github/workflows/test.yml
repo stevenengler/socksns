@@ -1,0 +1,69 @@
+# Syntax reference:
+# https://help.github.com/en/actions/automating-your-workflow-with-github-actions/workflow-syntax-for-github-actions
+
+name: Test
+
+defaults:
+  run:
+    shell: bash
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  testing:
+    runs-on: ubuntu-latest
+
+    container:
+      image: ${{ matrix.container }}
+      # docker blocks the unshare syscall by default
+      options: '--privileged'
+
+    strategy:
+      matrix:
+        # this CI testing can't test the different kernel versions that these distributions use,
+        # but this is better than nothing
+        container: ['ubuntu:16.04', 'ubuntu:18.04', 'ubuntu:20.04', 'debian:10-slim', 'debian:9-slim']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install Dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y curl clang
+
+      - name: Add User
+        run: |
+          useradd --create-home user
+          chown -R user:user .
+
+      - name: Install Rust
+        shell: su user {0}
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile=minimal
+
+      - name: Container Info
+        shell: su user {0}
+        run: |
+          pwd
+          id -u
+          cat /proc/sys/kernel/unprivileged_userns_clone || true
+
+      - name: Build
+        shell: su user {0}
+        run: |
+          . $HOME/.cargo/env
+          cargo build
+
+      - name: Run
+        shell: su user {0}
+        run: |
+          . $HOME/.cargo/env
+          # curl should fail due to the isolated network namespace and exit with code 6
+          RUST_LOG=debug RUST_BACKTRACE=1 cargo run curl -s google.com ; RV="$?"
+          [ "$RV" = "6" ]
