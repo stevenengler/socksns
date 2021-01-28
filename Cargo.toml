@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-log = "0.4.13"
+log = "0.4.14"
 env_logger = "0.8.2"
 nix = "0.19.1"
 libc = "0.2.83"
