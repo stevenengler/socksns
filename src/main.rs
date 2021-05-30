@@ -76,6 +76,7 @@ fn main() -> GenericResult<()> {
             write_to_file("uid_map", format!("{} 0 1", userid).as_bytes())?;
             write_to_file("gid_map", format!("{} 0 1", groupid).as_bytes())?;
 
+            // rust sockets are automatically CLOEXEC
             let listener = std::net::TcpListener::bind("127.0.0.1:9050")?;
             let fd = listener.into_raw_fd();
 
