@@ -230,6 +230,8 @@ async fn run_proxy_server(
 
     loop {
         tokio::select! {
+            // poll from top to bottom
+            biased;
             _ = stop_notify.notified() => {
                 debug!("Stopping listener");
                 break Ok(());
