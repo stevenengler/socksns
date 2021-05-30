@@ -252,22 +252,10 @@ async fn run_proxy_server(
 }
 
 /// Proxy data between the incoming connection and a new connection outside the network namespace.
-async fn proxy_connection(client: tokio::net::TcpStream) -> GenericResult<()> {
+async fn proxy_connection(mut client: tokio::net::TcpStream) -> GenericResult<()> {
     let dst: std::net::SocketAddr = "127.0.0.1:9050".parse()?;
+    let mut server = tokio::net::TcpStream::connect(dst).await?;
 
-    let server = tokio::net::TcpStream::connect(dst).await?;
-
-    let (mut client_r, mut client_w) = tokio::io::split(client);
-    let (mut server_r, mut server_w) = tokio::io::split(server);
-
-    let to_server = tokio::io::copy(&mut client_r, &mut server_w);
-    let to_client = tokio::io::copy(&mut server_r, &mut client_w);
-
-    // proxy the data
-    tokio::select! {
-        res = to_server => res?,
-        res = to_client => res?,
-    };
-
+    tokio::io::copy_bidirectional(&mut client, &mut server).await?;
     Ok(())
 }
