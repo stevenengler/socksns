@@ -3,20 +3,17 @@ use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 
+use clap::Parser;
+
 // extension for UnixStream to pass file descriptors
 use passfd::FdPassingExt;
 
 fn main() -> anyhow::Result<()> {
-    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    args.remove(0);
-
-    if args.len() == 0 {
-        println!("No program provided. Exiting.");
-        return Ok(());
-    }
+    let options = SocksnsOptions::parse();
 
     // initialize a basic logger
-    let env = env_logger::Env::default().default_filter_or("info");
+    let default_level = if options.debug { "debug" } else { "info" };
+    let env = env_logger::Env::default().default_filter_or(default_level);
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env)
         .format(move |buf, rec| {
@@ -35,8 +32,11 @@ fn main() -> anyhow::Result<()> {
 
     log::debug!("User info: uid={}, gid={}", userid, groupid);
 
-    let mut cmd = std::process::Command::new(&args[0]);
-    cmd.args(&args[1..]);
+    let options_copy = options.clone();
+
+    let mut cmd = std::process::Command::new(&options.command[0]);
+    cmd.args(&options.command[1..]);
+
     unsafe {
         cmd.pre_exec(move || {
             // warning: this code allocates memory and runs after the fork(), so there must
@@ -73,7 +73,10 @@ fn main() -> anyhow::Result<()> {
             write_to_file("gid_map", format!("{} 0 1", groupid).as_bytes())?;
 
             // rust sockets are automatically CLOEXEC
-            let listener = std::net::TcpListener::bind("127.0.0.1:9050")?;
+            let listener = std::net::TcpListener::bind((
+                std::net::Ipv4Addr::LOCALHOST,
+                options_copy.proxy.local_port,
+            ))?;
             let fd = listener.into_raw_fd();
 
             // send the bound socket to the process outside of the namespace
@@ -91,7 +94,7 @@ fn main() -> anyhow::Result<()> {
     // check that the program was found
     if let Err(ref e) = child {
         if e.kind() == std::io::ErrorKind::NotFound {
-            log::error!("{:?} cannot be found", args[0]);
+            log::error!("Program {:?} cannot be found", options.command[0]);
             std::process::exit(1);
         }
     }
@@ -126,7 +129,7 @@ fn main() -> anyhow::Result<()> {
 
         log::debug!("Starting proxy runtime");
 
-        rt.block_on(run_proxy_server(listening_fd, stop_notify_clone))
+        rt.block_on(run_proxy_server(listening_fd, stop_notify_clone, &options))
             .unwrap();
     });
 
@@ -220,6 +223,7 @@ fn bring_up_interface(interface_name: &[u8]) -> std::io::Result<()> {
 async fn run_proxy_server(
     listening_fd: i32,
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
+    options: &SocksnsOptions,
 ) -> anyhow::Result<()> {
     let listener = unsafe { std::net::TcpListener::from_raw_fd(listening_fd) };
     listener.set_nonblocking(true).unwrap();
@@ -236,8 +240,9 @@ async fn run_proxy_server(
             res = listener.accept() => {
                 let (socket, addr) = res.unwrap();
                 log::debug!("New connection from {}", addr);
+                let dst = (options.proxy.external_addr, options.proxy.external_port);
                 tokio::spawn(async move {
-                    if let Err(err) = proxy_connection(socket).await {
+                    if let Err(err) = proxy_connection(socket, dst.into()).await {
                         log::warn!("Unexpected error from connection {}: {}", addr, err);
                     } else {
                         log::debug!("Closed connection from {}", addr);
@@ -249,10 +254,70 @@ async fn run_proxy_server(
 }
 
 /// Proxy data between the incoming connection and a new connection outside the network namespace.
-async fn proxy_connection(mut client: tokio::net::TcpStream) -> anyhow::Result<()> {
-    let dst: std::net::SocketAddr = "127.0.0.1:9050".parse()?;
+async fn proxy_connection(
+    mut client: tokio::net::TcpStream,
+    dst: std::net::SocketAddr,
+) -> anyhow::Result<()> {
     let mut server = tokio::net::TcpStream::connect(dst).await?;
 
     tokio::io::copy_bidirectional(&mut client, &mut server).await?;
     Ok(())
+}
+
+/// This tool will run a program in an isolated network namespace, allowing the program to connect
+/// only to a single TCP address such as a SOCKS proxy
+#[derive(Parser, Debug, Clone)]
+#[clap(trailing_var_arg = true)]
+struct SocksnsOptions {
+    /// Show debug-level log messages.
+    #[clap(long)]
+    debug: bool,
+    /// Proxy TCP connections made to 'localhost:LOCAL_PORT' within the new namespace to
+    /// 'EXT_ADDRESS:EXT_PORT' outside of the namespace
+    #[clap(long, value_name = "LOCAL_PORT:EXT_ADDRESS:EXT_PORT")]
+    #[clap(default_value = "9050:localhost:9050")]
+    proxy: ProxyOption,
+    /// The command to run within the namespace
+    #[clap(required = true)]
+    command: Vec<std::ffi::OsString>,
+}
+
+#[derive(Parser, Debug, Copy, Clone)]
+struct ProxyOption {
+    local_port: u16,
+    external_addr: std::net::IpAddr,
+    external_port: u16,
+}
+
+impl std::str::FromStr for ProxyOption {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut x = s.split(':');
+
+        let local_port = x.next().ok_or("Missing local port")?;
+        let external_addr = x.next().ok_or("Missing external address")?;
+        let external_port = x.next().ok_or("Missing external port")?;
+
+        fn format_err(e: impl std::fmt::Display, val: impl std::fmt::Display) -> String {
+            format!("{}: '{}'", e, val)
+        }
+
+        let local_port = local_port.parse().map_err(|e| format_err(e, local_port))?;
+
+        let external_addr = match external_addr {
+            "localhost" => std::net::Ipv6Addr::LOCALHOST.into(),
+            x => x.parse().map_err(|e| format_err(e, external_addr))?,
+        };
+
+        let external_port = external_port
+            .parse()
+            .map_err(|e| format_err(e, external_port))?;
+
+        Ok(Self {
+            local_port,
+            external_addr,
+            external_port,
+        })
+    }
 }
