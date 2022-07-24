@@ -6,9 +6,7 @@ use std::os::unix::process::ExitStatusExt;
 // extension for UnixStream to pass file descriptors
 use passfd::FdPassingExt;
 
-type GenericResult<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync + 'static>>;
-
-fn main() -> GenericResult<()> {
+fn main() -> anyhow::Result<()> {
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     args.remove(0);
 
@@ -222,7 +220,7 @@ fn bring_up_interface(interface_name: &[u8]) -> std::io::Result<()> {
 async fn run_proxy_server(
     listening_fd: i32,
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
-) -> GenericResult<()> {
+) -> anyhow::Result<()> {
     let listener = unsafe { std::net::TcpListener::from_raw_fd(listening_fd) };
     listener.set_nonblocking(true).unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
@@ -251,7 +249,7 @@ async fn run_proxy_server(
 }
 
 /// Proxy data between the incoming connection and a new connection outside the network namespace.
-async fn proxy_connection(mut client: tokio::net::TcpStream) -> GenericResult<()> {
+async fn proxy_connection(mut client: tokio::net::TcpStream) -> anyhow::Result<()> {
     let dst: std::net::SocketAddr = "127.0.0.1:9050".parse()?;
     let mut server = tokio::net::TcpStream::connect(dst).await?;
 
