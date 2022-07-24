@@ -60,7 +60,7 @@ fn main() -> GenericResult<()> {
                 let num = f.write(bytes)?;
                 assert!(num == bytes.len());
                 Ok(())
-            };
+            }
 
             // gain root privileges in the new user namespace
             write_to_file("setgroups", b"deny")?;
