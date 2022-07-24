@@ -13,13 +13,13 @@ Support for unprivileged user namespaces is required to run socksns. This is ena
 git clone https://github.com/stevenengler/socksns.git
 cd socksns && cargo install --path .
 
-# install from crates.io
+# install the latest release from crates.io
 cargo install socksns
 ```
 
 #### Usage:
 
-You must have a SOCKS proxy (for example Tor) running on port 9050.
+If you have a SOCKS proxy (for example Tor) running on port 9050:
 
 ```bash
 socksns curl --proxy socks5h://localhost:9050 google.com
