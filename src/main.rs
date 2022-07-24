@@ -3,8 +3,6 @@ use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 
-use log::*;
-
 // extension for UnixStream to pass file descriptors
 use passfd::FdPassingExt;
 
@@ -37,7 +35,7 @@ fn main() -> GenericResult<()> {
     let userid = nix::unistd::getuid();
     let groupid = nix::unistd::getgid();
 
-    debug!("User info: uid={}, gid={}", userid, groupid);
+    log::debug!("User info: uid={}, gid={}", userid, groupid);
 
     let mut cmd = std::process::Command::new(&args[0]);
     cmd.args(&args[1..]);
@@ -87,7 +85,7 @@ fn main() -> GenericResult<()> {
         })
     };
 
-    debug!("Starting program: {:?}", cmd);
+    log::debug!("Starting program: {:?}", cmd);
 
     // warning: no threads can be running when spawn() is called
     let child = cmd.spawn();
@@ -95,7 +93,7 @@ fn main() -> GenericResult<()> {
     // check that the program was found
     if let Err(ref e) = child {
         if e.kind() == std::io::ErrorKind::NotFound {
-            error!("{:?} cannot be found", args[0]);
+            log::error!("{:?} cannot be found", args[0]);
             std::process::exit(1);
         }
     }
@@ -108,15 +106,15 @@ fn main() -> GenericResult<()> {
     // check that the read didn't time out
     if let Err(ref e) = listening_fd {
         if e.kind() == std::io::ErrorKind::WouldBlock {
-            debug!("Didn't receive the fd on the socket");
-            debug!("Assuming the child process crashed, so exiting...");
+            log::debug!("Didn't receive the fd on the socket");
+            log::debug!("Assuming the child process crashed, so exiting...");
             std::process::exit(1);
         }
     }
 
     let listening_fd = listening_fd?;
 
-    debug!("Received listening fd: {}", listening_fd);
+    log::debug!("Received listening fd: {}", listening_fd);
 
     // used to stop the proxy server
     let stop_notify = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -128,7 +126,7 @@ fn main() -> GenericResult<()> {
             .build()
             .unwrap();
 
-        debug!("Starting proxy runtime");
+        log::debug!("Starting proxy runtime");
 
         rt.block_on(run_proxy_server(listening_fd, stop_notify_clone))
             .unwrap();
@@ -141,12 +139,12 @@ fn main() -> GenericResult<()> {
         None => 128 + (exit_status.signal().unwrap() as i32),
     };
 
-    debug!("Program exited with status: {}", rv);
+    log::debug!("Program exited with status: {}", rv);
 
     // the program has exited, so tell the proxy to stop listening for new connections
     stop_notify.notify_one();
 
-    debug!("Waiting for proxy runtime to finish");
+    log::debug!("Waiting for proxy runtime to finish");
 
     // wait for existing proxy connections to finish
     proxy_runtime_thread.join().unwrap();
@@ -234,17 +232,17 @@ async fn run_proxy_server(
             // poll from top to bottom
             biased;
             _ = stop_notify.notified() => {
-                debug!("Stopping listener");
+                log::debug!("Stopping listener");
                 break Ok(());
             },
             res = listener.accept() => {
                 let (socket, addr) = res.unwrap();
-                debug!("New connection from {}", addr);
+                log::debug!("New connection from {}", addr);
                 tokio::spawn(async move {
                     if let Err(err) = proxy_connection(socket).await {
-                        warn!("Unexpected error from connection {}: {}", addr, err);
+                        log::warn!("Unexpected error from connection {}: {}", addr, err);
                     } else {
-                        debug!("Closed connection from {}", addr);
+                        log::debug!("Closed connection from {}", addr);
                     }
                 });
             },
