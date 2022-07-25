@@ -22,6 +22,10 @@ fn main() -> anyhow::Result<()> {
         })
         .init();
 
+    for line in format!("Options: {options:#?}").lines() {
+        log::debug!("{line}");
+    }
+
     let (stream_parent, stream_child) = std::os::unix::net::UnixStream::pair()?;
 
     // set a timeout so that if the child process exits early, the parent process won't block
