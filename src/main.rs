@@ -1,8 +1,10 @@
 use std::io::Write;
+use std::net::ToSocketAddrs;
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 
+use anyhow::Context;
 use clap::Parser;
 
 // extension for UnixStream to pass file descriptors
@@ -77,10 +79,7 @@ fn main() -> anyhow::Result<()> {
             write_to_file("gid_map", format!("{} 0 1", groupid).as_bytes())?;
 
             // rust sockets are automatically CLOEXEC
-            let listener = std::net::TcpListener::bind((
-                std::net::Ipv4Addr::LOCALHOST,
-                options_copy.proxy.local_port,
-            ))?;
+            let listener = std::net::TcpListener::bind(options_copy.proxy.local_addr)?;
             let fd = listener.into_raw_fd();
 
             // send the bound socket to the process outside of the namespace
@@ -244,9 +243,9 @@ async fn run_proxy_server(
             res = listener.accept() => {
                 let (socket, addr) = res.unwrap();
                 log::debug!("New connection from {}", addr);
-                let dst = (options.proxy.external_addr, options.proxy.external_port);
+                let dst = options.proxy.external_addr;
                 tokio::spawn(async move {
-                    if let Err(err) = proxy_connection(socket, dst.into()).await {
+                    if let Err(err) = proxy_connection(socket, dst).await {
                         log::warn!("Unexpected error from connection {}: {}", addr, err);
                     } else {
                         log::debug!("Closed connection from {}", addr);
@@ -276,7 +275,7 @@ struct SocksnsOptions {
     /// Show debug-level log messages.
     #[clap(long)]
     debug: bool,
-    /// Proxy TCP connections made to 'localhost:LOCAL_PORT' within the new namespace to
+    /// Proxy TCP connections made to '127.0.0.1:LOCAL_PORT' within the new namespace to
     /// 'EXT_ADDRESS:EXT_PORT' outside of the namespace
     #[clap(long, value_name = "LOCAL_PORT:EXT_ADDRESS:EXT_PORT")]
     #[clap(default_value = "9050:localhost:9050")]
@@ -288,40 +287,58 @@ struct SocksnsOptions {
 
 #[derive(Parser, Debug, Copy, Clone)]
 struct ProxyOption {
-    local_port: u16,
-    external_addr: std::net::IpAddr,
-    external_port: u16,
+    local_addr: std::net::SocketAddr,
+    external_addr: std::net::SocketAddr,
 }
 
 impl std::str::FromStr for ProxyOption {
-    type Err = String;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut x = s.split(':');
+        // split at the start and end so that we support ipv6 addresses in the middle such as '::1'
+        let (local_port, s) = s
+            .split_once(':')
+            .ok_or(anyhow::anyhow!("Missing the first ':'"))?;
+        let (mut external_host, external_port) = s
+            .rsplit_once(':')
+            .ok_or(anyhow::anyhow!("Missing the second ':'"))?;
 
-        let local_port = x.next().ok_or("Missing local port")?;
-        let external_addr = x.next().ok_or("Missing external address")?;
-        let external_port = x.next().ok_or("Missing external port")?;
-
-        fn format_err(e: impl std::fmt::Display, val: impl std::fmt::Display) -> String {
-            format!("{}: '{}'", e, val)
+        // if the host contains a ':', it should be parsed as an ipv6 address
+        if external_host.contains(':') {
+            // strip the surrounding square brackets (for example '[::1]')
+            external_host = external_host
+                .strip_prefix('[')
+                .ok_or(anyhow::anyhow!(
+                    "IPv6 address missing surrounding bracket '['"
+                ))?
+                .strip_suffix(']')
+                .ok_or(anyhow::anyhow!(
+                    "IPv6 address missing surrounding bracket ']'"
+                ))?;
         }
 
-        let local_port = local_port.parse().map_err(|e| format_err(e, local_port))?;
+        // parse the local port
+        let local_port = local_port
+            .parse()
+            .with_context(|| format!("Failed to parse port '{local_port}'"))?;
 
-        let external_addr = match external_addr {
-            "localhost" => std::net::Ipv6Addr::LOCALHOST.into(),
-            x => x.parse().map_err(|e| format_err(e, external_addr))?,
-        };
-
+        // parse the external port
         let external_port = external_port
             .parse()
-            .map_err(|e| format_err(e, external_port))?;
+            .with_context(|| format!("Failed to parse port '{external_port}'"))?;
+
+        // get the local address
+        let local_addr = (std::net::Ipv4Addr::LOCALHOST, local_port).into();
+
+        // get the remote address
+        let external_addr = (external_host, external_port)
+            .to_socket_addrs()?
+            .next()
+            .ok_or(anyhow::anyhow!("Failed to lookup external address"))?;
 
         Ok(Self {
-            local_port,
+            local_addr,
             external_addr,
-            external_port,
         })
     }
 }
