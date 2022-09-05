@@ -19,4 +19,4 @@ libc = "0.2.126"
 passfd = "0.1.4"
 clap = { version = "3.2.14", features = ["derive", "wrap_help"] }
 tokio = { version = "1.20.0", features = ["net", "rt", "io-util", "macros", "sync"] }
-anyhow = "1.0.58"
+anyhow = "1.0.64"
