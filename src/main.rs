@@ -270,7 +270,7 @@ async fn proxy_connection(
 /// This tool will run a program in an isolated network namespace, allowing the program to connect
 /// only to a single TCP address such as a SOCKS proxy
 #[derive(Parser, Debug, Clone)]
-#[clap(trailing_var_arg = true)]
+#[clap(version, trailing_var_arg = true)]
 struct SocksnsOptions {
     /// Show debug-level log messages.
     #[clap(long)]
