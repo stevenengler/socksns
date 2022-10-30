@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::net::ToSocketAddrs;
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
@@ -244,11 +244,16 @@ async fn run_proxy_server(
                 let (socket, addr) = res.unwrap();
                 log::debug!("New connection from {}", addr);
                 let dst = options.proxy.external_addr;
+
+                let ignore_errors = [ErrorKind::NotConnected, ErrorKind::ConnectionReset];
+
                 tokio::spawn(async move {
-                    if let Err(err) = proxy_connection(socket, dst).await {
-                        log::warn!("Unexpected error from connection {}: {}", addr, err);
-                    } else {
-                        log::debug!("Closed connection from {}", addr);
+                    match proxy_connection(socket, dst).await {
+                        Err(err) if ignore_errors.contains(&err.kind()) => {
+                            log::debug!("Unexpected error from connection {}: {}", addr, err)
+                        }
+                        Err(err) => log::warn!("Unexpected error from connection {}: {}", addr, err),
+                        Ok(()) => log::debug!("Closed connection from {}", addr),
                     }
                 });
             },
@@ -260,7 +265,7 @@ async fn run_proxy_server(
 async fn proxy_connection(
     mut client: tokio::net::TcpStream,
     dst: std::net::SocketAddr,
-) -> anyhow::Result<()> {
+) -> std::io::Result<()> {
     let mut server = tokio::net::TcpStream::connect(dst).await?;
 
     tokio::io::copy_bidirectional(&mut client, &mut server).await?;
