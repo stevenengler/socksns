@@ -1,6 +1,6 @@
 [package]
 name = "socksns"
-version = "0.3.1"
+version = "0.3.2"
 license = "MIT"
 authors = ["Steven Engler"]
 edition = "2021"
