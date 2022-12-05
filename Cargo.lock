@@ -233,9 +233,9 @@ checksum = "3baf96e39c5359d2eb0dd6ccb42c62b91d9678aa68160d261b9e0ccbf9e9dea9"
 
 [[package]]
 name = "passfd"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4033dfb289fd985235dce214f0df3c2aaa83d978da03161197aca260459dc20f"
+checksum = "40937dff86b281e4025fe0614c744d961797552ccf8dc681a297e694db283ef3"
 dependencies = [
  "libc",
 ]
