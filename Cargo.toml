@@ -18,5 +18,5 @@ nix = "0.25.0"
 libc = "0.2.137"
 passfd = "0.1.4"
 clap = { version = "4.0.18", features = ["derive", "wrap_help"] }
-tokio = { version = "1.21.2", features = ["net", "rt", "io-util", "macros", "sync"] }
+tokio = { version = "1.26.0", features = ["net", "rt", "io-util", "macros", "sync"] }
 anyhow = "1.0.66"
