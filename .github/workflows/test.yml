@@ -26,7 +26,7 @@ jobs:
       matrix:
         # this CI testing can't test the different kernel versions that these distributions use,
         # but this is better than nothing
-        container: ['ubuntu:16.04', 'ubuntu:18.04', 'ubuntu:20.04', 'debian:10-slim', 'debian:9-slim']
+        container: ['ubuntu:20.04', 'ubuntu:22.04', 'debian:11-slim', 'debian:12-slim']
 
     steps:
       - name: Checkout
