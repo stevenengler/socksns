@@ -138,9 +138,9 @@ fn main() -> anyhow::Result<()> {
 
     let exit_status = child.wait()?;
     let rv = match exit_status.code() {
-        Some(code) => code as i32,
+        Some(code) => code,
         // if it exited by a signal, set the exit code as bash does
-        None => 128 + (exit_status.signal().unwrap() as i32),
+        None => 128 + (exit_status.signal().unwrap()),
     };
 
     log::debug!("Program exited with status: {}", rv);
