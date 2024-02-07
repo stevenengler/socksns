@@ -1,4 +1,5 @@
-# documentation at: https://docs.github.com/en/github/administering-a-repository/configuration-options-for-dependency-updates
+# documentation at:
+# https://docs.github.com/en/github/administering-a-repository/configuration-options-for-dependency-updates
 
 version: 2
 
@@ -7,3 +8,6 @@ updates:
     directory: '/'
     schedule:
       interval: 'daily'
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
