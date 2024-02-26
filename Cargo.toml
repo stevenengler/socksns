@@ -14,7 +14,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 log = "0.4.17"
 env_logger = "0.11.1"
-nix = { version = "0.27.1", features = ["sched", "user"] }
+nix = { version = "0.28.0", features = ["sched", "user"] }
 libc = "0.2.137"
 passfd = "0.1.4"
 clap = { version = "4.5.0", features = ["derive", "wrap_help"] }
