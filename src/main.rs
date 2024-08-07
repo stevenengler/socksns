@@ -280,12 +280,14 @@ struct SocksnsOptions {
     /// Show debug-level log messages.
     #[clap(long)]
     debug: bool,
+    /// Configure how connections are proxied.
+    ///
     /// Proxy TCP connections made to '127.0.0.1:LOCAL_PORT' within the new namespace to
-    /// 'EXT_ADDRESS:EXT_PORT' outside of the namespace
+    /// 'EXT_ADDRESS:EXT_PORT' outside of the namespace.
     #[clap(long, value_name = "LOCAL_PORT:EXT_ADDRESS:EXT_PORT")]
     #[clap(default_value = "9050:localhost:9050")]
     proxy: ProxyOption,
-    /// The command to run within the namespace
+    /// The command to run within the namespace.
     #[clap(required = true)]
     command: Vec<std::ffi::OsString>,
 }
