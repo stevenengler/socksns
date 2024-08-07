@@ -4,7 +4,7 @@
 
 This tool will run a program in an isolated network namespace, allowing the program to connect only to a single TCP address such as a SOCKS proxy. This can help prevent accidental proxy-bypass issues that could leak non-proxied requests.
 
-#### Installation
+### Installation
 
 Support for unprivileged user namespaces is required to run socksns. This is enabled by default in the mainline kernel and most distributions, but you may want to make sure that `/proc/sys/kernel/unprivileged_userns_clone` is not `0`.
 
@@ -17,7 +17,7 @@ git clone https://github.com/stevenengler/socksns.git
 cargo install --path socksns
 ```
 
-#### Example
+### Example
 
 If you have a SOCKS proxy (for example Tor) running on port 9050:
 
@@ -41,7 +41,7 @@ Anything that's run in the podman container will be able to access the port
 opened by socksns. This is useful when you want an isolated container which can
 only access the Internet through a SOCKS proxy.
 
-#### Usage
+### Usage
 
 ```
 This tool will run a program in an isolated network namespace, allowing
