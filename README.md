@@ -9,12 +9,12 @@ This tool will run a program in an isolated network namespace, allowing the prog
 Support for unprivileged user namespaces is required to run socksns. This is enabled by default in the mainline kernel and most distributions, but you may want to make sure that `/proc/sys/kernel/unprivileged_userns_clone` is not `0`.
 
 ```bash
-# install from source
-git clone https://github.com/stevenengler/socksns.git
-cd socksns && cargo install --path .
-
 # install the latest release from crates.io
 cargo install socksns
+
+# install the latest development version
+git clone https://github.com/stevenengler/socksns.git
+cargo install --path socksns
 ```
 
 #### Example
