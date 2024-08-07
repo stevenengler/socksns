@@ -6,6 +6,7 @@ use std::os::unix::process::ExitStatusExt;
 
 use anyhow::Context;
 use clap::Parser;
+use nix::sched::CloneFlags;
 
 // extension for UnixStream to pass file descriptors
 use passfd::FdPassingExt;
@@ -48,8 +49,8 @@ fn main() -> anyhow::Result<()> {
             // warning: this code allocates memory and runs after the fork(), so there must
             // not be any threads running when this code starts (when the child spawns)
 
-            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWUSER).unwrap();
-            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET).unwrap();
+            nix::sched::unshare(CloneFlags::CLONE_NEWUSER).unwrap();
+            nix::sched::unshare(CloneFlags::CLONE_NEWNET).unwrap();
 
             // writes to a file in /proc/self
             fn write_to_file(fname: &str, bytes: &[u8]) -> std::io::Result<()> {
@@ -72,7 +73,7 @@ fn main() -> anyhow::Result<()> {
             // bring up the loopback interface while we have root privileges
             bring_up_interface(b"lo")?;
 
-            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWUSER).unwrap();
+            nix::sched::unshare(CloneFlags::CLONE_NEWUSER).unwrap();
 
             // become the original user again
             write_to_file("uid_map", format!("{} 0 1", userid).as_bytes())?;
