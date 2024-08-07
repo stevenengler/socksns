@@ -181,9 +181,12 @@ fn main() -> anyhow::Result<()> {
     std::process::exit(rv);
 }
 
-/// Convert a `&[u8]` to `&[i8]`. Useful when making C syscalls.
-fn u8_to_i8_slice(s: &[u8]) -> &[i8] {
-    unsafe { std::slice::from_raw_parts(s.as_ptr() as *const i8, s.len()) }
+/// Convert a `&[u8]` to `&[c_char]`. Useful when making C syscalls.
+fn u8_slice_to_c_char(s: &[u8]) -> &[libc::c_char] {
+    // platforms should typecast c_char as u8 or i8
+    const _: () = assert!(std::mem::size_of::<libc::c_char>() == 1);
+    const _: () = assert!(std::mem::align_of::<libc::c_char>() == 1);
+    unsafe { std::slice::from_raw_parts(s.as_ptr() as *const libc::c_char, s.len()) }
 }
 
 /// Bring up a given network interface.
@@ -235,7 +238,7 @@ fn bring_up_interface(interface_name: &[u8]) -> std::io::Result<()> {
 
     // copy name, leaving room for a nul byte
     assert!(interface_name.len() < std::mem::size_of_val(&ifr.ifr_name));
-    ifr.ifr_name[..interface_name.len()].clone_from_slice(u8_to_i8_slice(interface_name));
+    ifr.ifr_name[..interface_name.len()].clone_from_slice(u8_slice_to_c_char(interface_name));
 
     unsafe { ifr.u.ifr_flags |= libc::IFF_UP as i16 };
 
