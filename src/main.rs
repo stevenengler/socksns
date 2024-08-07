@@ -1,5 +1,6 @@
 use std::io::{ErrorKind, Write};
 use std::net::ToSocketAddrs;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
@@ -44,10 +45,32 @@ fn main() -> anyhow::Result<()> {
     let mut cmd = std::process::Command::new(&options.command[0]);
     cmd.args(&options.command[1..]);
 
-    unsafe {
-        cmd.pre_exec(move || {
-            // warning: this code allocates memory and runs after the fork(), so there must
-            // not be any threads running when this code starts (when the child spawns)
+    let options_clone = options.clone();
+    let pre_exec = move || {
+        let options = &options_clone;
+
+        if let Some(ref netns_path) = options.netns {
+            // use an existing network namespace
+
+            let current_userns_ino = std::fs::metadata("/proc/self/ns/user").unwrap().ino();
+            let current_netns_ino = std::fs::metadata("/proc/self/ns/net").unwrap().ino();
+
+            let target_netns = std::fs::File::open(netns_path).unwrap();
+            let target_userns = get_userns(&target_netns).unwrap();
+
+            let target_netns_ino = target_netns.metadata().unwrap().ino();
+            let target_userns_ino = target_userns.metadata().unwrap().ino();
+
+            // only try entering the network ns if we're not already in it
+            if current_netns_ino != target_netns_ino {
+                // only try entering the user ns if we're not already in it
+                if current_userns_ino != target_userns_ino {
+                    nix::sched::setns(target_userns, CloneFlags::CLONE_NEWUSER).unwrap();
+                }
+                nix::sched::setns(target_netns, CloneFlags::CLONE_NEWNET).unwrap();
+            }
+        } else {
+            // create our own network namespace
 
             nix::sched::unshare(CloneFlags::CLONE_NEWUSER).unwrap();
             nix::sched::unshare(CloneFlags::CLONE_NEWNET).unwrap();
@@ -78,21 +101,22 @@ fn main() -> anyhow::Result<()> {
             // become the original user again
             write_to_file("uid_map", format!("{} 0 1", userid).as_bytes())?;
             write_to_file("gid_map", format!("{} 0 1", groupid).as_bytes())?;
+        }
 
-            // rust sockets are automatically CLOEXEC
-            let listener = std::net::TcpListener::bind(options_copy.proxy.local_addr)?;
-            let fd = listener.into_raw_fd();
+        // rust sockets are automatically CLOEXEC
+        let listener = std::net::TcpListener::bind(options_copy.proxy.local_addr)?;
+        let fd = listener.into_raw_fd();
 
-            // send the bound socket to the process outside of the namespace
-            stream_child.send_fd(fd)?;
+        // send the bound socket to the process outside of the namespace
+        stream_child.send_fd(fd)?;
 
-            Ok(())
-        })
+        Ok(())
     };
+    unsafe { cmd.pre_exec(pre_exec) };
 
     log::debug!("Starting program: {:?}", cmd);
 
-    // warning: no threads can be running when spawn() is called
+    // warning: no threads can be running when spawn() is called due to the pre_exec code
     let child = cmd.spawn();
 
     // check that the program was found
@@ -223,6 +247,21 @@ fn bring_up_interface(interface_name: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Returns a file descriptor that refers to the owning user namespace for the namespace referred to
+/// by `ns`. Refer to `NS_GET_USERNS` for details.
+fn get_userns<Fd: std::os::fd::AsRawFd>(ns: &Fd) -> std::io::Result<std::fs::File> {
+    let ns = ns.as_raw_fd();
+
+    // https://github.com/torvalds/linux/blob/d4560686726f7a357922f300fc81f5964be8df04/include/uapi/linux/nsfs.h#L10
+    const NS_GET_USERNS: std::ffi::c_uint = 46849;
+
+    let userns_fd = unsafe { libc::ioctl(ns, NS_GET_USERNS.into()) };
+    if userns_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((unsafe { std::os::fd::OwnedFd::from_raw_fd(userns_fd) }).into())
+}
+
 /// Run the proxy listener.
 async fn run_proxy_server(
     listening_fd: i32,
@@ -291,6 +330,15 @@ struct SocksnsOptions {
     /// The command to run within the namespace.
     #[clap(required = true)]
     command: Vec<std::ffi::OsString>,
+    /// Use an existing network namespace instead of creating a new isolated one.
+    ///
+    /// The program will be able to use all network interfaces within this namespace, possibly using
+    /// them to access the Internet directly. If you wish to isolate the program's network traffic,
+    /// you must configure the network namespace correctly. This option will also automatically
+    /// enter the network namespace's user namespace. Elevated privileges may be required depending
+    /// on how the user namespaces are structured.
+    #[clap(long, value_name = "PATH")]
+    netns: Option<std::path::PathBuf>,
 }
 
 #[derive(Parser, Debug, Copy, Clone)]

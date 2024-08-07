@@ -26,6 +26,21 @@ socksns torsocks curl google.com
 socksns curl --proxy socks5h://localhost:9050 google.com
 ```
 
+You can also proxy connections from other network namespaces:
+
+```bash
+podman run --rm -it --name socksns-demo --network none fedora:40
+```
+
+```bash
+PID="$(podman ps -l --filter "name=socksns-demo" --format "{{.Pid}}")"
+socksns --netns /proc/"$PID"/ns/net sleep infinity
+```
+
+Anything that's run in the podman container will be able to access the port
+opened by socksns. This is useful when you want an isolated container which can
+only access the Internet through a SOCKS proxy.
+
 #### Usage
 
 ```
@@ -35,19 +50,39 @@ the program to connect only to a single TCP address such as a SOCKS proxy
 Usage: socksns [OPTIONS] <COMMAND>...
 
 Arguments:
-  <COMMAND>...  The command to run within the namespace
+  <COMMAND>...
+          The command to run within the namespace
 
 Options:
       --debug
           Show debug-level log messages
+
       --proxy <LOCAL_PORT:EXT_ADDRESS:EXT_PORT>
+          Configure how connections are proxied.
+
           Proxy TCP connections made to '127.0.0.1:LOCAL_PORT' within the
-          new namespace to 'EXT_ADDRESS:EXT_PORT' outside of the namespace
+          new namespace to 'EXT_ADDRESS:EXT_PORT' outside of the
+          namespace.
+
           [default: 9050:localhost:9050]
+
+      --netns <PATH>
+          Use an existing network namespace instead of creating a new
+          isolated one.
+
+          The program will be able to use all network interfaces within
+          this namespace, possibly using them to access the Internet
+          directly. If you wish to isolate the program's network traffic,
+          you must configure the network namespace correctly. This option
+          will also automatically enter the network namespace's user
+          namespace. Elevated privileges may be required depending on how
+          the user namespaces are structured.
+
   -h, --help
-          Print help information
+          Print help (see a summary with '-h')
+
   -V, --version
-          Print version information
+          Print version
 ```
 
 [crates.io]: https://crates.io/crates/socksns
